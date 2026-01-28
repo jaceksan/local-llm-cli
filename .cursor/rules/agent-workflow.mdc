@@ -1,0 +1,17 @@
+---
+description: Agent workflow + guardrails for this repo
+alwaysApply: true
+---
+
+## Workflow
+
+- Follow the existing design in this repo; don’t reinvent patterns.
+- After implementing a user request, validate the result (e.g. run `ruff`).
+- Do not commit or push unless the user explicitly asks.
+- Stop after completing one task/change-set and ask whether it should be committed before continuing to the next task.
+- If fixing something introduced by an earlier local (not-yet-pushed) commit, prefer a fixup-style commit.
+
+## Code changes
+
+- Keep diffs small and focused.
+- Prefer robust correctness first; optimize only after correctness is verified.
