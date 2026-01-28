@@ -1,5 +1,6 @@
 """Generation: streamer, thinking-cap criteria, and response generation."""
 
+import re
 import time
 
 import torch
@@ -9,6 +10,7 @@ from transformers.generation import StoppingCriteria, StoppingCriteriaList
 # Check stopping criteria every N generated tokens to avoid GPU->CPU sync every step.
 # .tolist() on a GPU tensor forces a sync; doing it every token killed throughput.
 THINKING_CRITERIA_CHECK_EVERY = 32
+_ANSWER_PREFIX_TAGS_RE = re.compile(r"^\s*(?:</think>|<answer>)\s*", re.DOTALL)
 
 
 class TimingStreamer(TextStreamer):
@@ -68,21 +70,6 @@ class MaxThinkingTokensCriteria(StoppingCriteria):
         self.tokenizer = tokenizer
         self.prompt_length = prompt_length
         self.max_thinking_tokens = max_thinking_tokens
-        self._think_open_ids = tokenizer.encode(self.THINK_OPEN, add_special_tokens=False)
-        self._think_close_ids = tokenizer.encode(self.THINK_CLOSE, add_special_tokens=False)
-
-    def _find_last_occurrence(self, seq: list, sub: list) -> int | None:
-        if not sub or len(sub) > len(seq):
-            return None
-        for i in range(len(seq) - len(sub), -1, -1):
-            if seq[i : i + len(sub)] == sub:
-                return i
-        return None
-
-    def _contains_sequence(self, seq: list, sub: list) -> bool:
-        if not sub or len(sub) > len(seq):
-            return False
-        return any(seq[i : i + len(sub)] == sub for i in range(len(seq) - len(sub) + 1))
 
     def __call__(self, input_ids: torch.Tensor, scores: torch.Tensor, **kwargs) -> torch.BoolTensor:
         gen_count = input_ids.shape[1] - self.prompt_length
@@ -91,15 +78,39 @@ class MaxThinkingTokensCriteria(StoppingCriteria):
             and gen_count < self.max_thinking_tokens
         ):
             return torch.tensor([False], device=input_ids.device)
-        gen = input_ids[0, self.prompt_length :].tolist()
-        last_open = self._find_last_occurrence(gen, self._think_open_ids)
-        if last_open is None:
+
+        # Robust: detect tags in decoded text (tokenization of "<think>" can vary).
+        gen_ids = input_ids[0, self.prompt_length :].tolist()
+        gen_text = self.tokenizer.decode(gen_ids, skip_special_tokens=False)
+
+        last_open_pos = gen_text.rfind(self.THINK_OPEN)
+        if last_open_pos == -1:
             return torch.tensor([False], device=input_ids.device)
-        think_start = last_open + len(self._think_open_ids)
-        after_think = gen[think_start:]
-        if self._contains_sequence(after_think, self._think_close_ids):
+        last_close_pos = gen_text.rfind(self.THINK_CLOSE)
+        if last_close_pos > last_open_pos:
             return torch.tensor([False], device=input_ids.device)
-        return torch.tensor([len(after_think) >= self.max_thinking_tokens], device=input_ids.device)
+
+        after_open = gen_text[last_open_pos + len(self.THINK_OPEN) :]
+        if self.THINK_CLOSE in after_open:
+            return torch.tensor([False], device=input_ids.device)
+
+        # Count tokens *inside* the current open <think> block.
+        think_token_count = len(
+            self.tokenizer.encode(after_open, add_special_tokens=False)
+        )
+        return torch.tensor(
+            [think_token_count >= self.max_thinking_tokens], device=input_ids.device
+        )
+
+
+def _strip_redundant_answer_prefix(text: str) -> str:
+    """Strip repeated leading </think>/<answer> tags (model may emit them again in phase 2)."""
+    out = text
+    while True:
+        m = _ANSWER_PREFIX_TAGS_RE.match(out)
+        if not m:
+            return out
+        out = out[m.end() :]
 
 
 def generate_response(
@@ -146,14 +157,28 @@ def generate_response(
             output_ids[0, input_token_count:], skip_special_tokens=False
         )
         if gen_text.count("<think>") > gen_text.count("</think>"):
-            think_close_ids = tokenizer.encode("</think>", add_special_tokens=False)
-            think_close_tensor = torch.tensor(
-                [think_close_ids], device=output_ids.device, dtype=output_ids.dtype
+            # We reached the thinking cap while still inside <think>.
+            # Close it and explicitly start the answer section.
+            insert_text = "</think>\n<answer>\n"
+            insert_ids = tokenizer.encode(insert_text, add_special_tokens=False)
+
+            # Streamer doesn't print "prompt"/input tokens, so we print and account for them manually.
+            print(insert_text, end="", flush=True)
+            if hasattr(streamer, "token_cache"):
+                streamer.token_cache.extend(insert_ids)
+            streamer.token_count += len(insert_ids)
+
+            insert_tensor = torch.tensor(
+                [insert_ids], device=output_ids.device, dtype=output_ids.dtype
             )
-            continued_ids = torch.cat([output_ids, think_close_tensor], dim=-1)
-            remaining = max_tokens - (output_ids.shape[-1] - input_token_count)
+            continued_ids = torch.cat([output_ids, insert_tensor], dim=-1)
+            remaining = max_tokens - (output_ids.shape[-1] - input_token_count) - len(insert_ids)
             if remaining > 0:
-                model.generate(
+                # Phase 2: generate without streaming, then print a cleaned answer.
+                # Token-level "bad words" is not reliable here because multiple tokenizations can decode
+                # to the same string (so the model can still emit "</think><answer>" via alternate splits).
+                phase2_start = time.perf_counter()
+                phase2_ids = model.generate(
                     continued_ids,
                     do_sample=True,
                     temperature=temperature,
@@ -161,8 +186,22 @@ def generate_response(
                     top_p=0.1,
                     repetition_penalty=1.05,
                     max_new_tokens=remaining,
-                    streamer=streamer,
                 )
+                phase2_end = time.perf_counter()
+                new_ids = phase2_ids[0, continued_ids.shape[-1] :]
+                new_text = tokenizer.decode(new_ids, skip_special_tokens=False)
+                new_text = _strip_redundant_answer_prefix(new_text)
+
+                # Print and record the cleaned continuation for history/metrics.
+                print(new_text, end="", flush=True)
+                new_text_ids = tokenizer.encode(new_text, add_special_tokens=False)
+                if hasattr(streamer, "token_cache"):
+                    streamer.token_cache.extend(new_text_ids)
+                streamer.token_count += len(new_text_ids)
+                # Extend timing to include phase 2 for overall throughput.
+                if streamer.first_token_time is None:
+                    streamer.first_token_time = streamer.start_time
+                streamer.end_time = (streamer.end_time or streamer.start_time) + (phase2_end - phase2_start)
     else:
         model.generate(input_ids, **gen_kwargs)
 
