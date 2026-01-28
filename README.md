@@ -16,7 +16,7 @@ make dev
 uv run python run.py
 ```
 
-This starts an interactive chat where you can ask multiple questions.
+This starts an interactive chat where you can ask multiple questions. **Conversation context is kept**: follow-up questions see previous questions and answers, so you can ask things like "What is BAU?" and then "Explain that in one sentence." Type `clear` to reset the conversation and start fresh; `help` lists all commands.
 
 ### Single question
 

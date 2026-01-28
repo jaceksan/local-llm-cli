@@ -82,8 +82,9 @@ def parse_args(parser: argparse.ArgumentParser) -> argparse.Namespace:
 
 
 def interactive_mode(model, tokenizer, streamer: TimingStreamer, args: argparse.Namespace) -> None:
-    """Run interactive chat loop."""
+    """Run interactive chat loop with conversation context (follow-up questions)."""
     print("\nInteractive mode. Type 'quit' or 'exit' to stop, 'help' for commands.\n")
+    history: list[dict] = []
     while True:
         try:
             prompt = input("\nYou: ").strip()
@@ -98,19 +99,27 @@ def interactive_mode(model, tokenizer, streamer: TimingStreamer, args: argparse.
         if prompt.lower() == "help":
             print("Commands:")
             print("  quit/exit/q  - Exit the program")
+            print("  clear        - Reset conversation (forget previous Q/A)")
             print("  help         - Show this help")
-            print("  Any other text will be sent to the model")
+            print("  Any other text will be sent to the model (context from previous turns kept)")
             continue
+        if prompt.lower() == "clear":
+            history = []
+            print("Conversation cleared.")
+            continue
+        history.append({"role": "user", "content": prompt})
         print("\nAssistant: ", end="", flush=True)
         metrics = generate_response(
             model,
             tokenizer,
             streamer,
-            prompt,
+            history,
             max_tokens=args.max_tokens,
             temperature=args.temperature,
             max_thinking_tokens=args.max_thinking_tokens,
         )
+        reply = streamer.get_generated_text()
+        history.append({"role": "assistant", "content": reply})
         print_metrics(metrics)
 
 
@@ -125,11 +134,12 @@ def main() -> None:
     if args.question:
         print(f"\nQuestion: {args.question}\n")
         print("Assistant: ", end="", flush=True)
+        messages = [{"role": "user", "content": args.question}]
         metrics = generate_response(
             model,
             tokenizer,
             streamer,
-            args.question,
+            messages,
             max_tokens=args.max_tokens,
             temperature=args.temperature,
             max_thinking_tokens=args.max_thinking_tokens,

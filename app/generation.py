@@ -52,6 +52,11 @@ class TimingStreamer(TextStreamer):
             "tokens_per_second": self.token_count / generation_time if generation_time > 0 else 0,
         }
 
+    def get_generated_text(self) -> str:
+        """Return the full generated text (assistant reply) from the last run."""
+        decode_kwargs = getattr(self, "decode_kwargs", None) or {"skip_special_tokens": True}
+        return self.tokenizer.decode(self.token_cache, **decode_kwargs)
+
 
 class MaxThinkingTokensCriteria(StoppingCriteria):
     """Stop generation after max_thinking_tokens inside a <think>...</think> block."""
@@ -101,14 +106,19 @@ def generate_response(
     model,
     tokenizer,
     streamer: TimingStreamer,
-    prompt: str,
+    messages: list[dict],
     max_tokens: int = 512,
     temperature: float = 0.1,
     max_thinking_tokens: int | None = None,
 ) -> dict:
-    """Generate a response and return metrics."""
+    """Generate a response from a conversation (list of {role, content}) and return metrics.
+
+    The last message in messages must be from the user. Previous messages provide context
+    for follow-up questions. Use streamer.get_generated_text() after the call to get the
+    assistant reply for appending to conversation history.
+    """
     inputs = tokenizer.apply_chat_template(
-        [{"role": "user", "content": prompt}],
+        messages,
         add_generation_prompt=True,
         return_tensors="pt",
         return_dict=True,
