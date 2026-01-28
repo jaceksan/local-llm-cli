@@ -1,0 +1,88 @@
+[project]
+name = "llm-liquidai"
+version = "0.1.0"
+description = "LiquidAI LFM2.5 model demo"
+authors = [{name = "GoodData Corporation", email = "support@gooddata.com"}]
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "transformers>=4.47.0",
+    "torch>=2.6.0",
+    "accelerate>=1.2.0",
+    "sentencepiece>=0.2.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.11.5",
+    "pyright>=1.1.400",
+    "pytest>=8.3.5",
+    "pytest-asyncio>=0.25.3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+exclude = [
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "build",
+    "dist",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "I",
+    "N",
+    "UP",
+    "W",
+    "C4",
+    "PIE",
+    "SIM",
+]
+ignore = [
+    "E501",  # Line too long (handled by formatter)
+]
+
+[tool.ruff.lint.isort]
+force-wrap-aliases = true
+combine-as-imports = true
+
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "basic"
+venvPath = "."
+venv = ".venv"
+exclude = [".venv"]
+
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"
+
+# PyTorch index configuration:
+# - Linux: Use CPU-only build from pytorch index (smaller, faster install)
+# - macOS: Use default PyPI build (includes MPS support for Apple Silicon)
+# 
+# To switch to CUDA on Linux, change the URL to:
+#   https://download.pytorch.org/whl/cu124  (for CUDA 12.4)
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+# Only use CPU index on Linux; macOS gets MPS-enabled torch from PyPI
+torch = [
+    { index = "pytorch-cpu", marker = "sys_platform == 'linux'" },
+]
