@@ -68,6 +68,7 @@ exclude = [".venv"]
 
 [tool.pytest.ini_options]
 asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
 
 # PyTorch index configuration:
 # - Linux: Use CPU-only build from pytorch index (smaller, faster install)

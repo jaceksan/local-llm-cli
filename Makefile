@@ -26,6 +26,25 @@ update:
 run:
 	uv run python run.py
 
+#
+# Testing
+#
+
+# Run unit tests (default; excludes tests/integration)
+.PHONY: test
+test:
+	@$(MAKE) test-unit
+
+# Run unit tests only (exclude slow integration suite under tests/integration)
+.PHONY: test-unit
+test-unit:
+	uv run python -m pytest tests --ignore=tests/integration
+
+# Run integration tests (explicit opt-in; forces offline mode to prevent downloads)
+.PHONY: test-integration
+test-integration:
+	TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 RUN_LLM_INTEGRATION_TESTS=1 uv run python -m pytest tests/integration
+
 
 ### MISC / HELPERS
 
