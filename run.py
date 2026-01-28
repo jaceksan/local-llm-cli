@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""CLI for interacting with LiquidAI LFM2.5 model."""
+"""CLI for interacting with LiquidAI LFM2.5 model.
+
+Performance note: On GPU, avoid per-token GPU->CPU sync in hot paths. StoppingCriteria
+runs the expensive check only every _THINKING_CRITERIA_CHECK_EVERY tokens. TextStreamer
+still does one .tolist() per token for decoding; for max throughput without streaming,
+run without a streamer.
+"""
 
 import argparse
 import platform
@@ -80,6 +86,11 @@ class TimingStreamer(TextStreamer):
         }
 
 
+# Check stopping criteria every N generated tokens to avoid GPU->CPU sync every step.
+# .tolist() on a GPU tensor forces a sync; doing it every token killed throughput (e.g. 12 -> 4 tok/s).
+_THINKING_CRITERIA_CHECK_EVERY = 32
+
+
 class MaxThinkingTokensCriteria(StoppingCriteria):
     """Stop generation after max_thinking_tokens inside a <think>...</think> block."""
 
@@ -115,7 +126,15 @@ class MaxThinkingTokensCriteria(StoppingCriteria):
         return False
 
     def __call__(self, input_ids: torch.Tensor, scores: torch.Tensor, **kwargs) -> torch.BoolTensor:
-        # Only consider generated part (after prompt)
+        gen_count = input_ids.shape[1] - self.prompt_length
+        # Avoid GPU->CPU .tolist() every step: only run the full check every N tokens,
+        # or when we might have hit the cap (so we don't overshoot by much).
+        if (
+            gen_count % _THINKING_CRITERIA_CHECK_EVERY != 0
+            and gen_count < self.max_thinking_tokens
+        ):
+            return torch.tensor([False], device=input_ids.device)
+        # Full check: .tolist() syncs GPU->CPU
         gen = input_ids[0, self.prompt_length :].tolist()
         last_open = self._find_last_occurrence(gen, self._think_open_ids)
         if last_open is None:
