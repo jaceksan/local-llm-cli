@@ -29,6 +29,13 @@ alwaysApply: true
 - `make format-fix` then `make lint-fix` (preferred over check-only).
 - `make test` for unit tests; `make test-integration` only when explicitly requested/opted-in.
 
+## Resource safety (avoid OOM / laptop freeze)
+
+- Never run multiple `run.py` / model-loading commands in parallel.
+- Avoid “benchmark loops” or repeated runs unless explicitly requested; keep generations short (`--max-tokens`) and caps low while iterating.
+- Prefer unit tests (`make test`) over integration tests; integration (`make test-integration`) only when explicitly requested and with offline/opt-in guards.
+- If you must run the model, do it once, then wait; don’t start other heavy commands concurrently.
+
 ## uv/pytest pitfall
 
 - Prefer `make test`; if invoking directly, use `uv run python -m pytest ...` (not `uv run pytest ...`).
