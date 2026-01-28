@@ -94,6 +94,22 @@ rm uv.lock
 make dev
 ```
 
+## Project structure
+
+Demo layout (single package, no PyPI publish):
+
+```
+app/
+  __init__.py    # package entry
+  __main__.py    # python -m app
+  cli.py         # argument parsing, main(), interactive mode
+  model.py       # device detection, load_model()
+  generation.py   # TimingStreamer, MaxThinkingTokensCriteria, generate_response()
+run.py           # entry point: uv run python run.py
+```
+
+Run with `uv run python run.py` or `uv run python -m app`.
+
 ## Requirements
 
 - Python 3.12+
