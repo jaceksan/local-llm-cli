@@ -7,6 +7,7 @@ import time
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextStreamer
+from transformers.generation import StoppingCriteria, StoppingCriteriaList
 
 
 def detect_device() -> tuple[str, str]:
@@ -79,6 +80,55 @@ class TimingStreamer(TextStreamer):
         }
 
 
+class MaxThinkingTokensCriteria(StoppingCriteria):
+    """Stop generation after max_thinking_tokens inside a <think>...</think> block."""
+
+    THINK_OPEN = "<think>"
+    THINK_CLOSE = "</think>"
+
+    def __init__(self, tokenizer, prompt_length: int, max_thinking_tokens: int):
+        self.tokenizer = tokenizer
+        self.prompt_length = prompt_length
+        self.max_thinking_tokens = max_thinking_tokens
+        self._think_open_ids = tokenizer.encode(
+            self.THINK_OPEN, add_special_tokens=False
+        )
+        self._think_close_ids = tokenizer.encode(
+            self.THINK_CLOSE, add_special_tokens=False
+        )
+
+    def _find_last_occurrence(self, seq: list, sub: list) -> int | None:
+        """Return start index of last occurrence of sub in seq, or None."""
+        if not sub or len(sub) > len(seq):
+            return None
+        for i in range(len(seq) - len(sub), -1, -1):
+            if seq[i : i + len(sub)] == sub:
+                return i
+        return None
+
+    def _contains_sequence(self, seq: list, sub: list) -> bool:
+        if not sub or len(sub) > len(seq):
+            return False
+        for i in range(len(seq) - len(sub) + 1):
+            if seq[i : i + len(sub)] == sub:
+                return True
+        return False
+
+    def __call__(self, input_ids: torch.Tensor, scores: torch.Tensor, **kwargs) -> torch.BoolTensor:
+        # Only consider generated part (after prompt)
+        gen = input_ids[0, self.prompt_length :].tolist()
+        last_open = self._find_last_occurrence(gen, self._think_open_ids)
+        if last_open is None:
+            return torch.tensor([False], device=input_ids.device)
+        think_start = last_open + len(self._think_open_ids)
+        after_think = gen[think_start:]
+        if self._contains_sequence(after_think, self._think_close_ids):
+            return torch.tensor([False], device=input_ids.device)
+        count = len(after_think)
+        stop = count >= self.max_thinking_tokens
+        return torch.tensor([stop], device=input_ids.device)
+
+
 def load_model(model_id: str, device: str, dtype: str):
     """Load model and tokenizer.
 
@@ -124,6 +174,7 @@ def generate_response(
     prompt: str,
     max_tokens: int = 512,
     temperature: float = 0.1,
+    max_thinking_tokens: int | None = None,
 ) -> dict:
     """Generate a response and return metrics."""
     inputs = tokenizer.apply_chat_template(
@@ -137,8 +188,7 @@ def generate_response(
 
     streamer.reset()
 
-    model.generate(
-        input_ids=input_ids,
+    gen_kwargs = dict(
         do_sample=True,
         temperature=temperature,
         top_k=50,
@@ -147,6 +197,38 @@ def generate_response(
         max_new_tokens=max_tokens,
         streamer=streamer,
     )
+    if max_thinking_tokens is not None and max_thinking_tokens > 0:
+        criteria = MaxThinkingTokensCriteria(
+            tokenizer, input_token_count, max_thinking_tokens
+        )
+        gen_kwargs["stopping_criteria"] = StoppingCriteriaList([criteria])
+        output_ids = model.generate(input_ids, **gen_kwargs)
+        # If we capped thinking, append </think> and continue generating the answer
+        gen_text = tokenizer.decode(
+            output_ids[0, input_token_count:], skip_special_tokens=False
+        )
+        if gen_text.count("<think>") > gen_text.count("</think>"):
+            think_close_ids = tokenizer.encode(
+                "</think>", add_special_tokens=False
+            )
+            think_close_tensor = torch.tensor(
+                [think_close_ids], device=output_ids.device, dtype=output_ids.dtype
+            )
+            continued_ids = torch.cat([output_ids, think_close_tensor], dim=-1)
+            remaining = max_tokens - (output_ids.shape[-1] - input_token_count)
+            if remaining > 0:
+                model.generate(
+                    continued_ids,
+                    do_sample=True,
+                    temperature=temperature,
+                    top_k=50,
+                    top_p=0.1,
+                    repetition_penalty=1.05,
+                    max_new_tokens=remaining,
+                    streamer=streamer,
+                )
+    else:
+        model.generate(input_ids, **gen_kwargs)
 
     metrics = streamer.get_metrics()
     metrics["input_tokens"] = input_token_count
@@ -199,6 +281,7 @@ def interactive_mode(model, tokenizer, streamer: TimingStreamer, args):
             prompt,
             max_tokens=args.max_tokens,
             temperature=args.temperature,
+            max_thinking_tokens=args.max_thinking_tokens,
         )
         print_metrics(metrics)
 
@@ -215,6 +298,8 @@ Examples:
   %(prog)s                           # Interactive mode (auto-detect device)
   %(prog)s "What is Python?"         # Single question
   %(prog)s -t 0.7 "Tell me a joke"   # With higher temperature
+  %(prog)s --max-thinking-tokens 128 # Shorter reasoning cap (default: 256)
+  %(prog)s --max-thinking-tokens 0   # No thinking cap
   %(prog)s --device mps              # Force Apple Silicon GPU
   %(prog)s --device cuda             # Force NVIDIA GPU
 
@@ -255,6 +340,13 @@ Detected device: {default_device} (dtype: {default_dtype})
         default=512,
         help="Maximum tokens to generate (default: 512)",
     )
+    parser.add_argument(
+        "--max-thinking-tokens",
+        type=int,
+        default=256,
+        metavar="N",
+        help="Cap reasoning inside <think>...</think> at N tokens (default: 256). Use 0 for no cap.",
+    )
 
     args = parser.parse_args()
 
@@ -287,6 +379,7 @@ Detected device: {default_device} (dtype: {default_dtype})
             args.question,
             max_tokens=args.max_tokens,
             temperature=args.temperature,
+            max_thinking_tokens=args.max_thinking_tokens,
         )
         print_metrics(metrics)
     else:
