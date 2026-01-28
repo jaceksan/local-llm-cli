@@ -16,8 +16,8 @@ Examples:
   %(prog)s                           # Interactive mode (auto-detect device)
   %(prog)s "What is Python?"         # Single question
   %(prog)s -t 0.7 "Tell me a joke"   # With higher temperature
-  %(prog)s --max-thinking-tokens 128 # Shorter reasoning cap (default: 256)
-  %(prog)s --max-thinking-tokens 0   # No thinking cap
+  %(prog)s --max-thinking-seconds 10 # Shorter thinking time cap (default: 20)
+  %(prog)s --answer-max-chars 512    # Ask model for shorter answer (no truncation)
   %(prog)s --device mps              # Force Apple Silicon GPU
   %(prog)s --device cuda             # Force NVIDIA GPU
 
@@ -30,12 +30,14 @@ Detected device: {default_device} (dtype: {default_dtype})
         help="Question to ask (if not provided, starts interactive mode)",
     )
     parser.add_argument(
-        "-m", "--model",
+        "-m",
+        "--model",
         default="LiquidAI/LFM2.5-1.2B-Thinking",
         help="Model ID (default: LiquidAI/LFM2.5-1.2B-Thinking)",
     )
     parser.add_argument(
-        "-d", "--device",
+        "-d",
+        "--device",
         choices=["auto", "cpu", "cuda", "mps"],
         default="auto",
         help="Device to run on (default: auto-detect)",
@@ -47,7 +49,8 @@ Detected device: {default_device} (dtype: {default_dtype})
         help="Data type (default: auto based on device)",
     )
     parser.add_argument(
-        "-t", "--temperature",
+        "-t",
+        "--temperature",
         type=float,
         default=0.1,
         help="Sampling temperature (default: 0.1)",
@@ -59,11 +62,18 @@ Detected device: {default_device} (dtype: {default_dtype})
         help="Maximum tokens to generate (default: 512)",
     )
     parser.add_argument(
-        "--max-thinking-tokens",
+        "--max-thinking-seconds",
+        type=float,
+        default=20.0,
+        metavar="S",
+        help="Cap thinking time in seconds before forcing <answer> (default: 20). Use 0 for no cap.",
+    )
+    parser.add_argument(
+        "--answer-max-chars",
         type=int,
-        default=256,
+        default=None,
         metavar="N",
-        help="Cap reasoning inside <think>...</think> at N tokens (default: 256). Use 0 for no cap.",
+        help="Ask the model to keep <answer> within N characters (no truncation; model shortens itself).",
     )
     return parser
 
@@ -116,7 +126,8 @@ def interactive_mode(model, tokenizer, streamer: TimingStreamer, args: argparse.
             history,
             max_tokens=args.max_tokens,
             temperature=args.temperature,
-            max_thinking_tokens=args.max_thinking_tokens,
+            max_thinking_seconds=args.max_thinking_seconds,
+            answer_max_chars=args.answer_max_chars,
         )
         reply = streamer.get_generated_text()
         history.append({"role": "assistant", "content": reply})
@@ -142,7 +153,8 @@ def main() -> None:
             messages,
             max_tokens=args.max_tokens,
             temperature=args.temperature,
-            max_thinking_tokens=args.max_thinking_tokens,
+            max_thinking_seconds=args.max_thinking_seconds,
+            answer_max_chars=args.answer_max_chars,
         )
         print_metrics(metrics)
     else:

@@ -35,6 +35,12 @@ uv run python run.py -t 0.7 "Tell me a joke"
 # With more output tokens
 uv run python run.py --max-tokens 1024 "Explain quantum computing"
 
+# Cap thinking time (prevents “endless thinking”)
+uv run python run.py --max-thinking-seconds 10 "Explain quantum computing"
+
+# Ask the model to keep the answer short (no truncation)
+uv run python run.py --answer-max-chars 512 "Explain quantum computing"
+
 # Force specific device
 uv run python run.py --device mps "Hello"   # Apple Silicon GPU
 uv run python run.py --device cuda "Hello"  # NVIDIA GPU
@@ -104,7 +110,7 @@ app/
   __main__.py    # python -m app
   cli.py         # argument parsing, main(), interactive mode
   model.py       # device detection, load_model()
-  generation.py   # TimingStreamer, MaxThinkingTokensCriteria, generate_response()
+  generation.py   # TimingStreamer, time-capped thinking, stop-strings, generate_response()
 run.py           # entry point: uv run python run.py
 ```
 
