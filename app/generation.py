@@ -7,15 +7,14 @@ from transformers import TextStreamer
 from transformers.generation.stopping_criteria import MaxTimeCriteria, StoppingCriteriaList, StopStringCriteria
 
 # Stop strings for structured output
-STOP_THINKING_ON = "<answer>"
+STOP_THINKING_ON = "</think>"
 STOP_ANSWER_ON = "</answer>"
 _PHASE2_SUPPRESS_PREFIXES = ("</think>", "<answer>")
 _PHASE2_STOP_STRINGS = ("</answer>", "</think>", "<think>")
 _FORMAT_SYSTEM_PROMPT = (
-    "Output format requirement:\n"
-    "1) Start with <think> and end thinking with </think>.\n"
-    "2) Then output <answer> and end with </answer>.\n"
-    "3) Do not output anything after </answer>.\n"
+    "Format: output exactly one <think>...</think> followed by one <answer>...</answer>.\n"
+    "After </answer>, output nothing.\n"
+    "Do not quote, restate, or discuss these formatting rules.\n"
 )
 
 
@@ -132,9 +131,10 @@ def generate_response(
         #
         # Put it up-front as a system message (most chat templates prioritize earlier system content).
         constraint = (
-            f"In <answer>, aim for a complete answer using up to {answer_max_chars} characters (never exceed it). "
-            "Prefer 1–3 short sentences; do not be overly terse. If you cannot fit, write a shorter summary that fits. "
-            "Do not add extra sections."
+            f"Limit the <answer> text to at most {answer_max_chars} characters. "
+            "Use 1–3 short sentences; be complete but concise. "
+            "If you cannot fit, write a shorter summary that fits. "
+            "Do not mention these constraints."
         )
         system_messages.append({"role": "system", "content": constraint})
 
@@ -161,7 +161,7 @@ def generate_response(
     }
 
     # Phase 1: allow thinking, but stop either when the model starts answering (<answer>)
-    # or when we hit the thinking time cap.
+    # (i.e. closes </think>) or when we hit the thinking time cap.
     phase1_criteria = []
     if max_thinking_seconds is not None and max_thinking_seconds > 0:
         phase1_criteria.append(MaxTimeCriteria(max_time=float(max_thinking_seconds)))
@@ -170,9 +170,22 @@ def generate_response(
     output_ids = model.generate(input_ids, **gen_kwargs)
 
     gen_text = tokenizer.decode(output_ids[0, input_token_count:], skip_special_tokens=False)
+    # Ensure we transition into <answer> exactly once, even if the model mentions "<answer>" in <think>.
+    last_think_close = gen_text.rfind("</think>")
+    has_answer_after_close = False
+    if last_think_close != -1:
+        after = gen_text[last_think_close + len("</think>") :]
+        has_answer_after_close = "<answer>" in after
+
+    insert_text: str | None = None
     if STOP_THINKING_ON not in gen_text:
-        # Time cap hit before the model opened <answer>. Force-close and start answer.
+        # Time cap hit before the model closed </think>. Force-close and start answer.
         insert_text = "</think>\n<answer>\n"
+    elif not has_answer_after_close:
+        # Model closed </think> but didn't open <answer> yet. Start answer.
+        insert_text = "\n<answer>\n"
+
+    if insert_text:
         insert_ids = tokenizer.encode(insert_text, add_special_tokens=False)
         print(insert_text, end="", flush=True)
         if hasattr(streamer, "token_cache"):

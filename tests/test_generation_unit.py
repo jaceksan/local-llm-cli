@@ -18,7 +18,7 @@ def _t(ids: list[int]) -> torch.Tensor:
 
 
 def test_stop_strings_constants() -> None:
-    assert STOP_THINKING_ON == "<answer>"
+    assert STOP_THINKING_ON == "</think>"
     assert STOP_ANSWER_ON == "</answer>"
 
 
