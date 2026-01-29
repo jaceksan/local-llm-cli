@@ -71,9 +71,9 @@ Detected device: {default_device} (dtype: {default_dtype})
     parser.add_argument(
         "--answer-max-chars",
         type=int,
-        default=None,
+        default=256,
         metavar="N",
-        help="Ask the model to keep <answer> within N characters (no truncation; model shortens itself).",
+        help="Ask the model to keep <answer> within N characters (default: 256; no truncation; model shortens itself).",
     )
     return parser
 

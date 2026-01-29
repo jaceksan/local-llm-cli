@@ -9,6 +9,14 @@ from transformers.generation.stopping_criteria import MaxTimeCriteria, StoppingC
 # Stop strings for structured output
 STOP_THINKING_ON = "<answer>"
 STOP_ANSWER_ON = "</answer>"
+_PHASE2_SUPPRESS_PREFIXES = ("</think>", "<answer>")
+_PHASE2_STOP_STRINGS = ("</answer>", "</think>", "<think>")
+_FORMAT_SYSTEM_PROMPT = (
+    "Output format requirement:\n"
+    "1) Start with <think> and end thinking with </think>.\n"
+    "2) Then output <answer> and end with </answer>.\n"
+    "3) Do not output anything after </answer>.\n"
+)
 
 
 class TimingStreamer(TextStreamer):
@@ -20,12 +28,53 @@ class TimingStreamer(TextStreamer):
         self.start_time = None
         self.first_token_time = None
         self.end_time = None
+        # Some models re-emit "</think><answer>" at the start of phase 2.
+        # Suppress those prefixes once so output doesn't show duplicated tags.
+        self._suppress_prefixes_once = False
+        self._suppress_carry = ""
 
     def reset(self):
         self.token_count = 0
         self.start_time = time.perf_counter()
         self.first_token_time = None
         self.end_time = None
+        self._suppress_prefixes_once = False
+        self._suppress_carry = ""
+
+    def enable_phase2_prefix_suppression(self) -> None:
+        self._suppress_prefixes_once = True
+        self._suppress_carry = ""
+
+    def on_finalized_text(self, text: str, stream_end: bool = False) -> None:
+        if not self._suppress_prefixes_once:
+            return super().on_finalized_text(text, stream_end=stream_end)
+
+        buf = self._suppress_carry + (text or "")
+        keep_tail = 16
+
+        changed = True
+        while changed:
+            changed = False
+            stripped = buf.lstrip()
+            for prefix in _PHASE2_SUPPRESS_PREFIXES:
+                if stripped.startswith(prefix):
+                    before = len(buf) - len(stripped)
+                    buf = (buf[:before] + stripped[len(prefix) :]).lstrip()
+                    changed = True
+                    break
+
+        stripped = buf.lstrip()
+        if stripped and not any(stripped.startswith(p) for p in _PHASE2_SUPPRESS_PREFIXES):
+            self._suppress_prefixes_once = False
+
+        if not stream_end and self._suppress_prefixes_once:
+            emit_upto = max(0, len(buf) - keep_tail)
+            emit_text = buf[:emit_upto]
+            self._suppress_carry = buf[emit_upto:]
+            return super().on_finalized_text(emit_text, stream_end=False)
+
+        self._suppress_carry = ""
+        return super().on_finalized_text(buf, stream_end=stream_end)
 
     def put(self, value):
         if self.first_token_time is None:
@@ -74,16 +123,22 @@ def generate_response(
     for follow-up questions. Use streamer.get_generated_text() after the call to get the
     assistant reply for appending to conversation history.
     """
+    # Always enforce a stable, parseable output shape.
+    system_messages: list[dict] = [{"role": "system", "content": _FORMAT_SYSTEM_PROMPT}]
+
     if answer_max_chars is not None and answer_max_chars > 0:
         # Insert a strict-ish instruction without truncating output ourselves.
         # If the model can't fit, it should produce a shorter summary instead.
         #
         # Put it up-front as a system message (most chat templates prioritize earlier system content).
         constraint = (
-            f"In <answer>, write at most {answer_max_chars} characters. "
-            "If you cannot, write a shorter summary that fits. Do not add extra sections."
+            f"In <answer>, aim for a complete answer using up to {answer_max_chars} characters (never exceed it). "
+            "Prefer 1–3 short sentences; do not be overly terse. If you cannot fit, write a shorter summary that fits. "
+            "Do not add extra sections."
         )
-        messages = [{"role": "system", "content": constraint}, *list(messages)]
+        system_messages.append({"role": "system", "content": constraint})
+
+    messages = [*system_messages, *list(messages)]
 
     inputs = tokenizer.apply_chat_template(
         messages,
@@ -129,6 +184,7 @@ def generate_response(
     # Phase 2: stream the answer, stopping cleanly at </answer>.
     remaining = max_tokens - (output_ids.shape[-1] - input_token_count)
     if remaining > 0:
+        streamer.enable_phase2_prefix_suppression()
         model.generate(
             output_ids,
             do_sample=True,
@@ -137,9 +193,19 @@ def generate_response(
             top_p=0.1,
             repetition_penalty=1.05,
             max_new_tokens=remaining,
-            stopping_criteria=StoppingCriteriaList([StopStringCriteria(tokenizer, STOP_ANSWER_ON)]),
+            stopping_criteria=StoppingCriteriaList([StopStringCriteria(tokenizer, list(_PHASE2_STOP_STRINGS))]),
             streamer=streamer,
         )
+
+        # If the model didn't close </answer> (or closed </think> instead), make output well-formed.
+        full = tokenizer.decode(streamer.token_cache, skip_special_tokens=False)
+        if "<answer>" in full and "</answer>" not in full:
+            suffix = "\n</answer>\n"
+            print(suffix, end="", flush=True)
+            suffix_ids = tokenizer.encode(suffix, add_special_tokens=False)
+            if hasattr(streamer, "token_cache"):
+                streamer.token_cache.extend(suffix_ids)
+            streamer.token_count += len(suffix_ids)
 
     metrics = streamer.get_metrics()
     metrics["input_tokens"] = input_token_count

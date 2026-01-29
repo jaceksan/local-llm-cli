@@ -38,8 +38,8 @@ uv run python run.py --max-tokens 1024 "Explain quantum computing"
 # Cap thinking time (prevents “endless thinking”)
 uv run python run.py --max-thinking-seconds 10 "Explain quantum computing"
 
-# Ask the model to keep the answer short (no truncation)
-uv run python run.py --answer-max-chars 512 "Explain quantum computing"
+# Ask the model to keep the answer short (no truncation; default is 256)
+uv run python run.py --answer-max-chars 256 "Explain quantum computing"
 
 # Force specific device
 uv run python run.py --device mps "Hello"   # Apple Silicon GPU
