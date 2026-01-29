@@ -41,11 +41,20 @@ uv run python run.py --max-thinking-seconds 10 "Explain quantum computing"
 # Ask the model to keep the answer short (no truncation; default is 256)
 uv run python run.py --answer-max-chars 256 "Explain quantum computing"
 
+# Disable the answer length request (no character target)
+uv run python run.py --answer-max-chars 0 "Explain quantum computing"
+
 # Force specific device
 uv run python run.py --device mps "Hello"   # Apple Silicon GPU
 uv run python run.py --device cuda "Hello"  # NVIDIA GPU
 uv run python run.py --device cpu "Hello"   # CPU only
 ```
+
+### Thinking + answer caps (behavior)
+
+- **Thinking cap**: `--max-thinking-seconds` limits how long phase 1 may run. If the model doesn’t close `</think>` in time, the CLI force-closes thinking and starts `<answer>`.
+- **Answer size target**: `--answer-max-chars` is a *prompt instruction* (not truncation). The model may answer shorter than the limit.
+- **Structured stop**: answer generation stops at `</answer>`. If the model fails to emit `</answer>`, the CLI appends it to keep output well-formed.
 
 ## Performance Metrics
 
